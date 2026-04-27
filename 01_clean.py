@@ -1,7 +1,6 @@
-# Loads only the needed columns from the raw OpenFoodFacts CSV, derives a
-# vegan flag from ingredients_analysis_tags, removes unusable and biologically
-# impossible rows, and keeps only categories that have both vegan and non-vegan
-# products. Saves a compact cleaned CSV ready for analysis.
+# Loads relevant columns from dataset, cleans it,
+# and keeps only categories that have both vegan and non-vegan
+# products. Saves a clean CSV ready to work with.
 
 import pandas as pd
 
@@ -56,8 +55,6 @@ COLUMNS = [
     "sodium_100g",
 ]
 
-# Nutrients that must be present and physically plausible (0–100 g per 100 g).
-# Energy is checked separately with a wider bound (0–900 kcal per 100 g).
 NUTRIENT_COLS = [
     "fat_100g",
     "saturated-fat_100g",
@@ -68,80 +65,67 @@ NUTRIENT_COLS = [
     "sodium_100g",
 ]
 
-MIN_CATEGORY_SIZE = 30  # minimum products per vegan-status group per category
+INVALID_GRADES = {"unknown", "not-applicable"}
+
+MIN_CATEGORY_SIZE = 30
 
 print("Loading selected columns...")
 df = pd.read_csv(RAW, sep="\t", usecols=COLUMNS, low_memory=False)
 print(f"Loaded {len(df):,} rows, {df.shape[1]} columns")
 
-# ── 1. Derive vegan flag ──────────────────────────────────────────────────────
-# ingredients_analysis_tags contains comma-separated tags like
-# "en:vegan,en:palm-oil-free" or "en:non-vegan".
+
 tags = df["ingredients_analysis_tags"].fillna("")
 df["is_vegan"] = tags.str.contains("en:vegan", na=False) & ~tags.str.contains(
     "en:non-vegan", na=False
 )
-df["is_non_vegan"] = tags.str.contains("en:non-vegan", na=False)
+is_non_vegan = tags.str.contains("en:non-vegan", na=False)
 
-df = df[df["is_vegan"] | df["is_non_vegan"]].copy()
+df["nutriscore_grade"] = df["nutriscore_grade"].str.strip().str.lower()
+
+df["pnns_groups_2"] = df["pnns_groups_2"].str.strip()
+
+numeric_cols = NUTRIENT_COLS + ["energy-kcal_100g", "nova_group"]
+df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
+
+# Filter
+
+# Keeping only rows where vegan status is known
+df = df[df["is_vegan"] | is_non_vegan]
 print(
-    f"After vegan filter:          {len(df):,} rows  (vegan {df['is_vegan'].sum():,} | non-vegan {df['is_non_vegan'].sum():,})"
+    f"After vegan filter:          {len(df):,} rows  (vegan {df['is_vegan'].sum():,} | non-vegan {(~df['is_vegan']).sum():,})"
 )
 
-# ── 2. Require nutriscore_grade (Q1 needs it) ─────────────────────────────────
-# Drop nulls, "unknown" (score couldn't be computed), and "not-applicable"
-# (water, baby food, etc. that are exempt from nutriscore by regulation).
-df["nutriscore_grade"] = df["nutriscore_grade"].str.strip().str.lower()
-df = df[
-    df["nutriscore_grade"].notna()
-    & ~df["nutriscore_grade"].isin(["unknown", "not-applicable"])
-].copy()
+# Require a real nutriscore_grade.
+df = df[df["nutriscore_grade"].notna() & ~df["nutriscore_grade"].isin(INVALID_GRADES)]
 print(f"After nutriscore filter:     {len(df):,} rows")
 
-# ── 3. Require pnns_groups_2 (fair category comparisons need it) ──────────────
-# Drop nulls, empty strings, AND the literal value "unknown" — OpenFoodFacts
-# uses "unknown" as a placeholder when the category could not be determined.
+# Require a known food category
 df = df[
-    df["pnns_groups_2"].notna()
-    & (df["pnns_groups_2"].str.strip() != "")
-    & (df["pnns_groups_2"].str.lower() != "unknown")
-].copy()
+    df["pnns_groups_2"].notna() & ~df["pnns_groups_2"].str.lower().isin({"", "unknown"})
+]
 print(f"After category filter:       {len(df):,} rows")
 
-# ── 4. Coerce nutrient columns to numeric (CSV stores everything as strings) ──
-for col in NUTRIENT_COLS + ["energy-kcal_100g"]:
-    df[col] = pd.to_numeric(df[col], errors="coerce")
-
-# ── 5. Require key nutrients (Q2 analysis needs them) ────────────────────────
-df = df[df[NUTRIENT_COLS].notna().all(axis=1)].copy()
+# Require all key nutrients to be present
+df = df[df[NUTRIENT_COLS].notna().all(axis=1)]
 print(f"After nutrient filter:       {len(df):,} rows")
 
-# ── 6. Remove biologically impossible values ──────────────────────────────────
-# Each nutrient is per 100 g of food, so it cannot exceed 100 g or go below 0.
-# Energy cannot exceed 900 kcal/100 g (pure fat ≈ 900 kcal).
-nutrient_mask = (df[NUTRIENT_COLS] >= 0).all(axis=1) & (df[NUTRIENT_COLS] <= 100).all(
+# Remove biologically impossible values.
+nutrient_ok = (df[NUTRIENT_COLS] >= 0).all(axis=1) & (df[NUTRIENT_COLS] <= 100).all(
     axis=1
 )
-df = df[nutrient_mask].copy()
-print(f"After nutrient range filter: {len(df):,} rows")
+energy_ok = df["energy-kcal_100g"].isna() | df["energy-kcal_100g"].between(0, 900)
+df = df[nutrient_ok & energy_ok]
+print(f"After impossible value filter:{len(df):,} rows")
 
-energy_mask = df["energy-kcal_100g"].isna() | df["energy-kcal_100g"].between(0, 900)
-df = df[energy_mask].copy()
-print(f"After energy range filter:   {len(df):,} rows")
-
-# ── 7. Normalise remaining columns ────────────────────────────────────────────
-df["nova_group"] = pd.to_numeric(df["nova_group"], errors="coerce")
-
-# ── 8. Keep only categories with both groups (≥ MIN_CATEGORY_SIZE each) ───────
-# Q1 compares vegan vs non-vegan within the same category. Categories that only
-# have one group make that comparison impossible; tiny groups produce noisy stats.
+# 6. Keep only categories with both groups (≥ MIN_CATEGORY_SIZE each).
+# Q1 compares vegan vs non-vegan within the same category. Categories with only
+# one group can't be compared; tiny groups produce noisy statistics.
 counts = df.groupby(["pnns_groups_2", "is_vegan"]).size().unstack(fill_value=0)
-# unstack gives columns True and False (vegan / non-vegan)
 valid_cats = counts[
     (counts.get(True, 0) >= MIN_CATEGORY_SIZE)
     & (counts.get(False, 0) >= MIN_CATEGORY_SIZE)
 ].index
-df = df[df["pnns_groups_2"].isin(valid_cats)].copy()
+df = df[df["pnns_groups_2"].isin(valid_cats)]
 print(
     f"After category balance filter:{len(df):,} rows  ({len(valid_cats)} categories kept)"
 )
