@@ -1,6 +1,6 @@
 # Loads relevant columns from dataset, cleans it,
 # and keeps only categories that have both vegan and non-vegan
-# products. Saves a clean CSV ready to work with.
+# products. Saves a clean CSV.
 
 import pandas as pd
 
@@ -11,47 +11,18 @@ COLUMNS = [
     "code",
     "product_name",
     "ingredients_analysis_tags",
-    # Standardised food category at a useful level of detail
-    # (e.g. "Processed meat", "Dairy desserts", "Plant-based foods").
-    # Used to make fair like-for-like comparisons (Q1) and to isolate
-    # meat/dairy alternatives for Q2.
     "pnns_groups_2",
-    # Numeric nutri-score (-15 to +40). Needed for statistical comparisons
-    # (means, distributions) between vegan and non-vegan products (Q1).
     "nutriscore_score",
-    # Letter grade version of the nutri-score (a–e). Easier to read in charts
-    # and tables alongside the numeric score.
     "nutriscore_grade",
-    # NOVA processing group (1–4). 4 = ultra-processed. Central to Q3:
-    # are vegan products more likely to be ultra-processed?
     "nova_group",
-    # Count of food additives (emulsifiers, preservatives, colourings, etc.).
-    # A proxy for processing level that complements NOVA in Q3.
     "additives_n",
-    # Energy density. A basic nutritional baseline useful for Q1 comparisons
-    # and for contextualising the sugar/fat numbers in Q2.
     "energy-kcal_100g",
-    # Total fat — one of the four nutri-score negative nutrients.
-    # Relevant to Q1 (overall nutrition) and Q2 (fat in alternatives).
     "fat_100g",
-    # Saturated fat — the nutri-score penalises this separately from total fat
-    # because it is linked to cardiovascular risk.
     "saturated-fat_100g",
-    # Sugar — central to Q2: do vegan alternatives add sugar to compensate
-    # for missing animal-derived flavour?
     "sugars_100g",
-    # Dietary fibre — a key positive nutrient in the nutri-score and a marker
-    # of diet quality. Vegan diets are often associated with higher fibre;
-    # including it lets us check whether processed vegan products keep that advantage.
     "fiber_100g",
-    # Protein — important for Q2 because one common criticism of vegan
-    # alternatives is lower or lower-quality protein.
     "proteins_100g",
-    # Salt — the form in which sodium is reported on European packaging.
-    # Included alongside sodium because some rows populate one but not the other.
     "salt_100g",
-    # Sodium — the nutrient directly used in the nutri-score calculation and
-    # central to Q2: do vegan alternatives add sodium for flavour?
     "sodium_100g",
 ]
 
@@ -117,9 +88,7 @@ energy_ok = df["energy-kcal_100g"].isna() | df["energy-kcal_100g"].between(0, 90
 df = df[nutrient_ok & energy_ok]
 print(f"After impossible value filter:{len(df):,} rows")
 
-# 6. Keep only categories with both groups (≥ MIN_CATEGORY_SIZE each).
-# Q1 compares vegan vs non-vegan within the same category. Categories with only
-# one group can't be compared; tiny groups produce noisy statistics.
+# Keep only categories with both groups
 counts = df.groupby(["pnns_groups_2", "is_vegan"]).size().unstack(fill_value=0)
 valid_cats = counts[
     (counts.get(True, 0) >= MIN_CATEGORY_SIZE)
